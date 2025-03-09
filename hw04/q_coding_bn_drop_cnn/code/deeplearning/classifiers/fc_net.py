@@ -234,6 +234,76 @@ class FullyConnectedNet(object):
         for k, v in self.params.items():
             self.params[k] = v.astype(dtype)
 
+    def affine_relu_forward(x, w, b):
+        a, fc_cache = affine_forward(x, w, b)
+        out, relu_cache = relu_forward(a)
+        cache = (fc_cache, relu_cache)
+        return out, cache
+    
+    def affine_relu_backward(dout, cache):
+        """
+        Backward pass for the affine-relu convenience layer
+        """
+        fc_cache, relu_cache = cache
+        da = relu_backward(dout, relu_cache)
+        dx, dw, db = affine_backward(da, fc_cache)
+        return dx, dw, db
+    
+    def affine_bn_relu_forward(x, w, b, gamma, beta, bn_params):
+        """
+        Convenience layer that performs an affine transform followed by a ReLU
+
+        Inputs:
+        - x: Input to the affine layer
+        - w, b: Weights for the affine layer
+
+        Returns a tuple of:
+        - out: Output from the ReLU
+        - cache: Object to give to the backward pass
+        """
+        a, fc_cache = affine_forward(x, w, b)
+        a, bn_cache = batchnorm_forward(a, gamma, beta, bn_params)
+        out, relu_cache = relu_forward(a)
+        cache = (fc_cache, bn_cache, relu_cache)
+        return out, cache   
+
+    def affine_bn_relu_backward(dout, cache):
+        """
+        Backward pass for the affine-relu convenience layer
+        """
+        fc_cache, bn_cache, relu_cache = cache
+        da = relu_backward(dout, relu_cache)
+        da, dgamma, dbeta = batchnorm_backward(da, bn_cache)
+        dx, dw, db = affine_backward(da, fc_cache)
+        return dx, dw, db, dgamma, dbeta     
+
+    def affine_relu_do_forward(x, w, b, do_params):
+        """
+        Convenience layer that performs an affine transform followed by a ReLU
+
+        Inputs:
+        - x: Input to the affine layer
+        - w, b: Weights for the affine layer
+
+        Returns a tuple of:
+        - out: Output from the ReLU
+        - cache: Object to give to the backward pass
+        """
+        a, fc_cache = affine_relu_forward(x, w, b)
+        out, do_cache = dropout_forward(a, do_params)
+        cache = (fc_cache, do_cache)
+        return out, cache
+
+
+    def affine_relu_do_backward(dout, cache):
+        """
+        Backward pass for the affine-relu convenience layer
+        """
+        fc_cache, do_cache = cache
+        da = dropout_backward(dout, do_cache)
+        dx, dw, db = affine_relu_backward(da, fc_cache)
+        return dx, dw, db
+
     def loss(self, X, y=None):
         """
         Compute loss and gradient for the fully-connected net.
@@ -268,6 +338,27 @@ class FullyConnectedNet(object):
         # layer, etc.                                                              #
         ############################################################################
 
+        scores = X
+        cache_list = []
+
+        for layer in range(self.num_layers - 1):
+            W, b = self.params["W" + str(layer + 1)], self.params["b" + str(layer + 1)]
+
+            if self.use_batchnorm:
+                gamma = self.params["gamma" + str(layer + 1)]
+                beta = self.params["beta" + str(layer + 1)]
+                scores, cache = affine_bn_relu_forward(scores, W, b, gamma, beta, self.bn_params[layer])
+            elif self.use_dropout:
+                scores, cache = affine_relu_do_forward(scores, W, b, self.dropout_param) 
+            else:
+                scores, cache = affine_relu_forward(scores, W, b)
+
+            cache_list.append(cache)
+
+        W, b = self.params["W" + str(self.num_layers)], self.params["b" + str(self.num_layers)]
+        scores, cache = affine_forward(scores, W, b)
+        cache_list.append(cache)
+
         ############################################################################
         #                             END OF YOUR CODE                             #
         ############################################################################
@@ -292,6 +383,29 @@ class FullyConnectedNet(object):
         # of 0.5 to simplify the expression for the gradient.                      #
         ############################################################################
         # FC scores -> softmax. Calculate loss and gradients
+
+        loss, dscores = softmax_loss(scores, y)
+
+        for layer in range(self.num_layers):
+            W = self.params["W" + str(layer + 1)]
+            loss += 0.5 * self.reg * np.sum(W ** 2)
+
+        dscores, dW, db = affine_backward(dscores, cache_list.pop())
+        grads["W" + str(self.num_layers)] = dW + self.reg * self.params["W" + str(self.num_layers)]
+        grads["b" + str(self.num_layers)] = db
+
+        for layer in range(self.num_layers - 1, 0, -1):
+            if self.use_batchnorm:
+                dscores, dW, db, dgamma, dbeta = affine_bn_relu_backward(dscores, cache_list.pop())
+                grads["gamma" + str(layer)] = dgamma
+                grads["beta" + str(layer)] = dbeta
+            elif self.use_dropout:
+                dscores, dW, db = affine_relu_do_backward(dscores, cache_list.pop())
+            else:
+                dscores, dW, db = affine_relu_backward(dscores, cache_list.pop())
+
+            grads["W" + str(layer)] = dW + self.reg * self.params["W" + str(layer)]
+            grads["b" + str(layer)] = db
 
         ############################################################################
         #                             END OF YOUR CODE                             #
